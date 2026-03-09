@@ -144,6 +144,162 @@ function LoginScreen({ onLoginPassenger, onLoginDriver }) {
   );
 }
 
+// ==================== Customer Support Modal ====================
+function SupportModal({ isOpen, onClose, userId }) {
+  const [subject, setSubject] = useState('');
+  const [message, setMessage] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async () => {
+    if (!subject || !message) {
+      alert('الرجاء ملء جميع الحقول');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      socket.emit('submit_complaint', { userId, subject, message });
+      alert('تم إرسال شكواك بنجاح. سيتم الرد عليك قريباً.');
+      setSubject('');
+      setMessage('');
+      onClose();
+    } catch (error) {
+      console.error('Error submitting complaint:', error);
+      alert('حدث خطأ في إرسال الشكوى');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div style={styles.modalOverlay}>
+      <div style={styles.modal}>
+        <h3>خدمة العملاء</h3>
+        <input
+          type="text"
+          placeholder="موضوع الشكوى"
+          value={subject}
+          onChange={(e) => setSubject(e.target.value)}
+          style={styles.input}
+        />
+        <textarea
+          placeholder="اشرح مشكلتك بالتفصيل"
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          style={{...styles.input, minHeight: '100px'}}
+        />
+        <div style={styles.modalButtons}>
+          <button
+            onClick={handleSubmit}
+            disabled={loading}
+            style={{...styles.button, flex: 1}}
+          >
+            {loading ? 'جاري الإرسال...' : 'إرسال الشكوى'}
+          </button>
+          <button
+            onClick={onClose}
+            style={{...styles.cancelButton, flex: 1}}
+          >
+            إلغاء
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==================== Messages Modal ====================
+function MessagesModal({ isOpen, onClose, rideInfo, user }) {
+  const [messages, setMessages] = useState([]);
+  const [newMessage, setNewMessage] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (isOpen && rideInfo) {
+      socket.on('new_message', (msg) => {
+        if (msg.rideId === rideInfo.id) {
+          setMessages(prev => [...prev, msg]);
+        }
+      });
+    }
+    return () => socket.off('new_message');
+  }, [isOpen, rideInfo]);
+
+  const handleSendMessage = () => {
+    if (!newMessage.trim()) return;
+
+    socket.emit('send_message', {
+      rideId: rideInfo.id,
+      senderId: user.id,
+      senderName: user.name,
+      message: newMessage
+    });
+
+    setMessages(prev => [...prev, {
+      id: Math.random().toString(36).substr(2, 9),
+      rideId: rideInfo.id,
+      senderId: user.id,
+      senderName: user.name,
+      message: newMessage,
+      timestamp: new Date()
+    }]);
+
+    setNewMessage('');
+  };
+
+  if (!isOpen || !rideInfo) return null;
+
+  return (
+    <div style={styles.modalOverlay}>
+      <div style={styles.modal}>
+        <h3>الرسائل مع {rideInfo.driver?.name || 'السائق'}</h3>
+        <div style={styles.messagesContainer}>
+          {messages.map(msg => (
+            <div
+              key={msg.id}
+              style={{
+                ...styles.message,
+                alignSelf: msg.senderId === user.id ? 'flex-end' : 'flex-start',
+                background: msg.senderId === user.id ? '#fbc02d' : '#e0e0e0',
+                color: msg.senderId === user.id ? '#000' : '#000'
+              }}
+            >
+              <p style={{margin: '0 0 5px 0', fontSize: '12px', fontWeight: 'bold'}}>
+                {msg.senderName}
+              </p>
+              <p style={{margin: 0}}>{msg.message}</p>
+            </div>
+          ))}
+        </div>
+        <div style={styles.messageInput}>
+          <input
+            type="text"
+            placeholder="اكتب رسالتك..."
+            value={newMessage}
+            onChange={(e) => setNewMessage(e.target.value)}
+            onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+            style={{flex: 1, padding: '8px', borderRadius: '4px', border: '1px solid #ddd'}}
+          />
+          <button
+            onClick={handleSendMessage}
+            style={{...styles.button, marginLeft: '8px', padding: '8px 15px'}}
+          >
+            إرسال
+          </button>
+        </div>
+        <button
+          onClick={onClose}
+          style={{...styles.cancelButton, width: '100%', marginTop: '10px'}}
+        >
+          إغلاق
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ==================== Passenger Screen ====================
 function PassengerScreen({ user, onLogout }) {
   const [pickup, setPickup] = useState(null);
@@ -154,10 +310,12 @@ function PassengerScreen({ user, onLogout }) {
   const [rating, setRating] = useState(0);
   const [comment, setComment] = useState('');
   const [mapCenter, setMapCenter] = useState([15.5527, 32.5599]); // Khartoum
-  const [selectionMode, setSelectionMode] = useState(null); // 'pickup' or 'destination'
+  const [selectionMode, setSelectionMode] = useState(null);
   const [pickupName, setPickupName] = useState('');
   const [destinationName, setDestinationName] = useState('');
   const [isGettingLocation, setIsGettingLocation] = useState(false);
+  const [showSupportModal, setShowSupportModal] = useState(false);
+  const [showMessagesModal, setShowMessagesModal] = useState(false);
 
   useEffect(() => {
     socket.on('ride_accepted', (data) => {
@@ -170,11 +328,20 @@ function PassengerScreen({ user, onLogout }) {
       setRideInfo(data);
     });
 
+    socket.on('ride_cancelled', (data) => {
+      if (data.passengerId === user.id) {
+        alert(`تم إلغاء الرحلة: ${data.cancelReason}`);
+        setStatus('idle');
+        setRideInfo(null);
+      }
+    });
+
     return () => {
       socket.off('ride_accepted');
       socket.off('ride_completed');
+      socket.off('ride_cancelled');
     };
-  }, []);
+  }, [user.id]);
 
   useEffect(() => {
     if (pickup && destination) {
@@ -186,7 +353,6 @@ function PassengerScreen({ user, onLogout }) {
     }
   }, [pickup, destination]);
 
-  // Get current location automatically
   const handleGetCurrentLocation = () => {
     setIsGettingLocation(true);
     if (navigator.geolocation) {
@@ -211,7 +377,6 @@ function PassengerScreen({ user, onLogout }) {
     }
   };
 
-  // Handle map click for manual location selection
   const handleMapClick = (latlng) => {
     if (selectionMode === 'pickup') {
       setPickup(latlng);
@@ -235,6 +400,24 @@ function PassengerScreen({ user, onLogout }) {
         dropoffLocation: destination,
         estimatedPrice: price,
       });
+    }
+  };
+
+  const handleCancelRide = () => {
+    if (rideInfo && confirm('هل أنت متأكد من إلغاء الرحلة؟')) {
+      socket.emit('ride_cancelled', {
+        rideId: rideInfo.id,
+        cancelledBy: user.id,
+        reason: 'تم الإلغاء من قبل الراكب'
+      });
+      setStatus('idle');
+      setRideInfo(null);
+    }
+  };
+
+  const handleCallDriver = () => {
+    if (rideInfo?.driver?.phone) {
+      window.location.href = `tel:${rideInfo.driver.phone}`;
     }
   };
 
@@ -326,6 +509,9 @@ function PassengerScreen({ user, onLogout }) {
         <h1>TUYA - خدمة التوصيل</h1>
         <div>
           <span style={styles.userInfo}>مرحباً: {user.name}</span>
+          <button onClick={() => setShowSupportModal(true)} style={{...styles.logoutButton, background: '#2196f3'}}>
+            💬 الدعم
+          </button>
           <button onClick={onLogout} style={styles.logoutButton}>
             تسجيل خروج
           </button>
@@ -448,13 +634,46 @@ function PassengerScreen({ user, onLogout }) {
                   <p><strong>المركبة:</strong> {rideInfo.driver.vehicle}</p>
                   <p><strong>رقم اللوحة:</strong> {rideInfo.driver.plateNumber}</p>
                   <p><strong>التقييم:</strong> ⭐ {rideInfo.driver.rating}</p>
-                  <p><strong>رقم الهاتف:</strong> {rideInfo.driver.phone}</p>
+                  
+                  <div style={styles.actionButtons}>
+                    <button
+                      onClick={handleCallDriver}
+                      style={{...styles.button, background: '#4caf50'}}
+                    >
+                      📞 اتصل بالسائق
+                    </button>
+                    <button
+                      onClick={() => setShowMessagesModal(true)}
+                      style={{...styles.button, background: '#2196f3'}}
+                    >
+                      💬 رسالة
+                    </button>
+                    <button
+                      onClick={handleCancelRide}
+                      style={{...styles.button, background: '#f44336'}}
+                    >
+                      ❌ إلغاء الرحلة
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
           )}
         </div>
       </div>
+
+      <SupportModal
+        isOpen={showSupportModal}
+        onClose={() => setShowSupportModal(false)}
+        userId={user.id}
+      />
+
+      <MessagesModal
+        isOpen={showMessagesModal}
+        onClose={() => setShowMessagesModal(false)}
+        rideInfo={rideInfo}
+        user={user}
+      />
     </div>
   );
 }
@@ -465,13 +684,12 @@ function DriverScreen({ user, onLogout }) {
   const [availableRides, setAvailableRides] = useState([]);
   const [currentRide, setCurrentRide] = useState(null);
   const [driverLocation, setDriverLocation] = useState(null);
-  const [driverStats, setDriverStats] = useState({ totalRides: 0, rating: 5.0 });
+  const [showMessagesModal, setShowMessagesModal] = useState(false);
 
   useEffect(() => {
     if (isOnline) {
       socket.emit('driver_online', user.id);
 
-      // Get driver location
       if (navigator.geolocation) {
         navigator.geolocation.watchPosition((position) => {
           const { latitude, longitude } = position.coords;
@@ -500,9 +718,17 @@ function DriverScreen({ user, onLogout }) {
       }
     });
 
+    socket.on('ride_cancelled', (ride) => {
+      if (ride.driverId === user.id && currentRide?.id === ride.id) {
+        alert(`تم إلغاء الرحلة: ${ride.cancelReason}`);
+        setCurrentRide(null);
+      }
+    });
+
     return () => {
       socket.off('new_ride_available');
       socket.off('ride_completed');
+      socket.off('ride_cancelled');
     };
   }, [isOnline, user.id, currentRide]);
 
@@ -516,6 +742,23 @@ function DriverScreen({ user, onLogout }) {
     if (currentRide) {
       socket.emit('ride_completed', { rideId: currentRide.id });
       setCurrentRide(null);
+    }
+  };
+
+  const handleCancelRide = () => {
+    if (currentRide && confirm('هل أنت متأكد من إلغاء الرحلة؟')) {
+      socket.emit('ride_cancelled', {
+        rideId: currentRide.id,
+        cancelledBy: user.id,
+        reason: 'تم الإلغاء من قبل السائق'
+      });
+      setCurrentRide(null);
+    }
+  };
+
+  const handleCallPassenger = () => {
+    if (currentRide?.passengerPhone) {
+      window.location.href = `tel:${currentRide.passengerPhone}`;
     }
   };
 
@@ -575,15 +818,33 @@ function DriverScreen({ user, onLogout }) {
               <p><strong>الراكب:</strong> {currentRide.passengerName}</p>
               <p><strong>رقم الهاتف:</strong> {currentRide.passengerPhone}</p>
               <p><strong>السعر:</strong> {currentRide.estimatedPrice} جنيه</p>
-              <button
-                onClick={handleCompleteRide}
-                style={{
-                  ...styles.button,
-                  background: '#4caf50',
-                }}
-              >
-                إنهاء الرحلة
-              </button>
+              
+              <div style={styles.actionButtons}>
+                <button
+                  onClick={handleCallPassenger}
+                  style={{...styles.button, background: '#4caf50'}}
+                >
+                  📞 اتصل بالراكب
+                </button>
+                <button
+                  onClick={() => setShowMessagesModal(true)}
+                  style={{...styles.button, background: '#2196f3'}}
+                >
+                  💬 رسالة
+                </button>
+                <button
+                  onClick={handleCompleteRide}
+                  style={{...styles.button, background: '#4caf50'}}
+                >
+                  ✅ إنهاء الرحلة
+                </button>
+                <button
+                  onClick={handleCancelRide}
+                  style={{...styles.button, background: '#f44336'}}
+                >
+                  ❌ إلغاء الرحلة
+                </button>
+              </div>
             </div>
           )}
 
@@ -592,6 +853,13 @@ function DriverScreen({ user, onLogout }) {
           )}
         </div>
       </div>
+
+      <MessagesModal
+        isOpen={showMessagesModal}
+        onClose={() => setShowMessagesModal(false)}
+        rideInfo={currentRide}
+        user={user}
+      />
     </div>
   );
 }
@@ -750,6 +1018,15 @@ const styles = {
     fontWeight: 'bold',
     marginTop: '10px',
   },
+  cancelButton: {
+    padding: '10px 15px',
+    background: '#f44336',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '5px',
+    cursor: 'pointer',
+    fontWeight: 'bold',
+  },
   statusMessage: {
     padding: '10px',
     background: '#e3f2fd',
@@ -763,6 +1040,12 @@ const styles = {
     borderRadius: '5px',
     marginTop: '10px',
     border: '2px solid #fbc02d',
+  },
+  actionButtons: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+    marginTop: '10px',
   },
   ratingContainer: {
     maxWidth: '500px',
@@ -890,6 +1173,57 @@ const styles = {
     textAlign: 'center',
     color: '#999',
     padding: '20px',
+  },
+  modalOverlay: {
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    background: 'rgba(0,0,0,0.5)',
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1000,
+  },
+  modal: {
+    background: '#fff',
+    padding: '30px',
+    borderRadius: '10px',
+    boxShadow: '0 5px 20px rgba(0,0,0,0.3)',
+    width: '90%',
+    maxWidth: '500px',
+    maxHeight: '80vh',
+    overflowY: 'auto',
+  },
+  modalButtons: {
+    display: 'flex',
+    gap: '10px',
+    marginTop: '15px',
+  },
+  messagesContainer: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '10px',
+    height: '300px',
+    overflowY: 'auto',
+    marginBottom: '15px',
+    padding: '10px',
+    background: '#f5f5f5',
+    borderRadius: '5px',
+  },
+  message: {
+    padding: '10px 15px',
+    borderRadius: '8px',
+    maxWidth: '80%',
+    wordWrap: 'break-word',
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  messageInput: {
+    display: 'flex',
+    gap: '10px',
+    marginBottom: '10px',
   },
 };
 

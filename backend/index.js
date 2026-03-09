@@ -20,6 +20,8 @@ let users = [];
 let drivers = [];
 let rides = [];
 let ratings = [];
+let complaints = [];
+let messages = [];
 
 // ==================== REST API Endpoints ====================
 
@@ -152,6 +154,127 @@ app.post('/api/ratings', (req, res) => {
   res.json(newRating);
 });
 
+// ==================== Customer Support & Complaints ====================
+
+// Submit a complaint
+app.post('/api/complaints', (req, res) => {
+  const { userId, rideId, subject, message } = req.body;
+  
+  if (!userId || !subject || !message) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  const newComplaint = {
+    id: Math.random().toString(36).substr(2, 9),
+    userId,
+    rideId: rideId || null,
+    subject,
+    message,
+    status: 'open',
+    createdAt: new Date(),
+    responses: []
+  };
+
+  complaints.push(newComplaint);
+  io.emit('new_complaint', newComplaint);
+
+  res.json(newComplaint);
+});
+
+// Get all complaints for a user
+app.get('/api/complaints/user/:userId', (req, res) => {
+  const userComplaints = complaints.filter(c => c.userId === req.params.userId);
+  res.json(userComplaints);
+});
+
+// Get all complaints (for admin/support)
+app.get('/api/complaints', (req, res) => {
+  res.json(complaints);
+});
+
+// Add response to complaint
+app.post('/api/complaints/:complaintId/response', (req, res) => {
+  const { message, respondedBy } = req.body;
+  
+  const complaint = complaints.find(c => c.id === req.params.complaintId);
+  if (!complaint) {
+    return res.status(404).json({ error: 'Complaint not found' });
+  }
+
+  const response = {
+    id: Math.random().toString(36).substr(2, 9),
+    message,
+    respondedBy,
+    createdAt: new Date()
+  };
+
+  complaint.responses.push(response);
+  io.emit('complaint_response', { complaintId: complaint.id, response });
+
+  res.json(response);
+});
+
+// ==================== Messages & Chat ====================
+
+// Get messages for a ride
+app.get('/api/messages/ride/:rideId', (req, res) => {
+  const rideMessages = messages.filter(m => m.rideId === req.params.rideId);
+  res.json(rideMessages);
+});
+
+// Send a message
+app.post('/api/messages', (req, res) => {
+  const { rideId, senderId, senderName, message } = req.body;
+  
+  if (!rideId || !senderId || !message) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  const newMessage = {
+    id: Math.random().toString(36).substr(2, 9),
+    rideId,
+    senderId,
+    senderName,
+    message,
+    timestamp: new Date()
+  };
+
+  messages.push(newMessage);
+  io.emit('new_message', newMessage);
+
+  res.json(newMessage);
+});
+
+// ==================== Ride Cancellation ====================
+
+// Cancel a ride
+app.post('/api/rides/:rideId/cancel', (req, res) => {
+  const { cancelledBy, reason } = req.body;
+  
+  const ride = rides.find(r => r.id === req.params.rideId);
+  if (!ride) {
+    return res.status(404).json({ error: 'Ride not found' });
+  }
+
+  if (ride.status === 'completed' || ride.status === 'cancelled') {
+    return res.status(400).json({ error: 'Cannot cancel a completed or already cancelled ride' });
+  }
+
+  ride.status = 'cancelled';
+  ride.cancelledBy = cancelledBy;
+  ride.cancelReason = reason || 'No reason provided';
+  ride.cancelledAt = new Date();
+
+  const driver = drivers.find(d => d.id === ride.driverId);
+  if (driver) {
+    driver.currentRide = null;
+  }
+
+  io.emit('ride_cancelled', ride);
+
+  res.json(ride);
+});
+
 // ==================== Socket.IO Events ====================
 
 io.on('connection', (socket) => {
@@ -205,6 +328,7 @@ io.on('connection', (socket) => {
       createdAt: new Date(),
       acceptedAt: null,
       completedAt: null,
+      cancelledAt: null,
       ...rideData
     };
 
@@ -287,11 +411,14 @@ io.on('connection', (socket) => {
 
   // Ride cancelled
   socket.on('ride_cancelled', (data) => {
-    const { rideId } = data;
+    const { rideId, cancelledBy, reason } = data;
     const ride = rides.find(r => r.id === rideId);
 
     if (ride) {
       ride.status = 'cancelled';
+      ride.cancelledBy = cancelledBy;
+      ride.cancelReason = reason || 'No reason provided';
+      ride.cancelledAt = new Date();
 
       const driver = drivers.find(d => d.id === ride.driverId);
       if (driver) {
@@ -299,7 +426,7 @@ io.on('connection', (socket) => {
       }
 
       io.emit('ride_cancelled', ride);
-      console.log(`Ride ${rideId} cancelled`);
+      console.log(`Ride ${rideId} cancelled by ${cancelledBy}`);
     }
   });
 
@@ -315,8 +442,28 @@ io.on('connection', (socket) => {
       timestamp: new Date()
     };
 
+    messages.push(messageData);
     io.emit('new_message', messageData);
     console.log(`Message in ride ${rideId}: ${message}`);
+  });
+
+  // Submit complaint
+  socket.on('submit_complaint', (data) => {
+    const { userId, rideId, subject, message } = data;
+    const complaint = {
+      id: Math.random().toString(36).substr(2, 9),
+      userId,
+      rideId: rideId || null,
+      subject,
+      message,
+      status: 'open',
+      createdAt: new Date(),
+      responses: []
+    };
+
+    complaints.push(complaint);
+    io.emit('new_complaint', complaint);
+    console.log(`New complaint from user ${userId}: ${subject}`);
   });
 
   socket.on('disconnect', () => {
